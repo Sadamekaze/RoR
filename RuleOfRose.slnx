@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/RuleOfRose.Cli/RuleOfRose.Cli.csproj" />
+    <Project Path="src/RuleOfRose.Core/RuleOfRose.Core.csproj" />
+    <Project Path="src/RuleOfRose.Translator/RuleOfRose.Translator.csproj" />
+  </Folder>
+</Solution>

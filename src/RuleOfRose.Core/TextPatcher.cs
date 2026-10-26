@@ -208,12 +208,14 @@ public static class TextPatcher
             if (entries.Count > 0 && entries[0].ModuleOffset < insert) insert = entries[0].ModuleOffset;
         }
         // Blok tambahan diletakkan sesudah alamat terjauh yang dirujuk pola
-        // referensi mana pun (teks atau bukan), supaya rujukan lama tidak
-        // tiba-tiba mengenai string baru dan tidak ada data yang tertimpa.
+        // referensi mana pun (teks atau bukan), ditambah margin: area tepat di
+        // atas akhir data dipakai engine sebagai buffer teks runtime (di a164
+        // ada 39 rujukan ke 0x6D90..0x6DD0 yang isinya nol di file), jadi teks
+        // baru tidak boleh menempel di situ.
         int appendBase = m.Length + deltaShift;
         if (appendPool.Count > 0)
         {
-            int gapBase = RtpkArchive.Align(Math.Max(m.Length, (int)scan.MaxRefTarget + 1));
+            int gapBase = RtpkArchive.Align(Math.Max(m.Length, (int)scan.MaxRefTarget + 1) + 0x200);
             appendBase = gapBase + deltaShift;
         }
         var nm = new byte[appendBase + appendPool.Count];
@@ -230,20 +232,10 @@ public static class TextPatcher
             // Isi modul bergeser, jadi gp dan specialLuiBase ikut bergeser.
             RtpkArchive.Put(nm, 20, (uint)(dataStart + deltaShift));
         }
-        int tailGrowth = nm.Length - m.Length - deltaShift;
-        if (tailGrowth > 0)
-        {
-            // Blok tambahan ada di ujung modul (sesudah alamat terjauh yang
-            // dirujuk instruksi) dan posisinya relatif terhadap gp harus tetap
-            // (tidak ikut bergeser). Header tetap konsisten
-            // (dataStart + dataSize = panjang modul, seperti modul asli):
-            //   gp = dataStart + dataSize + bias + 0x8000
-            // dataSize tumbuh sebesar blok itu dan bias (i32@12) turun sebesar itu.
-            uint dataSize = RtpkArchive.U(nm, 24);
-            int bias = RtpkArchive.I32(nm, 12);
-            RtpkArchive.Put(nm, 24, dataSize + (uint)tailGrowth);
-            RtpkArchive.Put(nm, 12, unchecked((uint)(bias - tailGrowth)));
-        }
+        // Header (dataStart, dataSize, bias) TIDAK diubah untuk blok tambahan:
+        // gp lalu persis seperti aslinya, dan data section tetap byte-identik.
+        // Menumbuhkan dataSize membuat engine melihat data lebih panjang dari
+        // aslinya, yang berujung cutscene terlewat di a164.
         var (gp, basis) = ModuleScanner.Bases(nm);
         var (gpBefore, basisBefore) = ModuleScanner.Bases(m);
         if (gp - gpBefore != deltaShift || basis - basisBefore != deltaShift)

@@ -6,9 +6,10 @@ namespace RuleOfRose.Core;
 // Kind: "lui_addiu" (LUI rt,hi + ADDIU; base mengikuti hi — 0x41/0x45 ->
 //       specialLuiBase, 0x42/0x46 -> specialLuiBase+0x10000,
 //       hi lain -> native hi<<16),
-//       "gp_addiu" (ADDIU rt,gp,imm, rewritten to rs=AT on patch), atau
-//       "at_addiu" (ADDIU rt,at,imm dengan AT = specialLuiBase; bentuk
-//       hasil patch gp_addiu — dibutuhkan agar file terpatch terbaca ulang).
+//       "gp_addiu" (ADDIU rt,gp,imm — saat patch rs tetap $gp; game tidak
+//       membaca teks yang dirujuk lewat AT hasil rewrite), atau
+//       "at_addiu" (ADDIU rt,at,imm dengan AT = specialLuiBase; hanya muncul
+//       di arsip hasil patch versi lama — import mengembalikannya ke $gp).
 public sealed class TextRef
 {
     public TextRef() { }
@@ -28,8 +29,9 @@ public sealed class TextEntryRecord
 {
     [JsonPropertyName("id")] public string Id { get; set; } = "";
     [JsonPropertyName("source")] public string Source { get; set; } = "";
-    // May be LONGER than Source: changed strings move to a pool inserted
-    // before the module data and every reference is re-patched.
+    // May be LONGER than Source: changed strings move to a pool (after the
+    // module data when the reference uses $gp, before the first text when it
+    // uses the LUI/ADDIU base) and every reference is re-patched.
     [JsonPropertyName("translation")] public string Translation { get; set; } = "";
     [JsonPropertyName("module_offset")] public int ModuleOffset { get; set; }
     [JsonPropertyName("references")] public List<TextRef> References { get; set; } = [];
@@ -53,7 +55,10 @@ public sealed record ImportResult(int Changed, int AddedBytes, int OutputBytes, 
 // entries. AtViolations menghitung word yang menulis AT di luar LUI at,0x45;
 // nilainya informasi saja (byte string di region kode ikut terhitung), bukan
 // alasan menolak patch — Import memverifikasi setiap referensi.
-public sealed record ModuleScan(long Gp, long BaseAddress, int AtWrites, int AtViolations, List<TextEntryRecord> Entries);
+// MaxRefTarget = alamat terjauh yang dirujuk pola referensi mana pun (teks
+// atau bukan), dipakai agar blok teks tambahan diletakkan sesudahnya.
+public sealed record ModuleScan(long Gp, long BaseAddress, int AtWrites, int AtViolations,
+    long MaxRefTarget, List<TextEntryRecord> Entries);
 
 // Parsed RTPK container. ModulePartIndex locates the ELFR101 part (not hard-coded).
 public sealed record AraArchive(byte[] Bytes, List<byte[]> Parts, int ModulePartIndex, string Sha256)

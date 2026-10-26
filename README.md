@@ -18,8 +18,10 @@ re-pointed — so a translation may be **longer** than the original line.
 - **Finds the text for you** — discovers strings referenced by `LUI`/`ADDIU`
   pairs and by GP-relative `ADDIU`, including Shift-JIS and in-game markup codes.
 - **Longer translations supported** — changed lines are moved into a new pool
-  inserted before the module data, and every referencing instruction is
-  re-patched to follow them.
+  and every referencing instruction is re-patched to follow them. A reference
+  that used `$gp` keeps using `$gp` (gp itself is left at its original value);
+  the tool never rewrites a reference to `$at`, because the game does not read
+  text reached that way.
 - **Safe rebuilds** — output is always built from the original archive, and a
   JSON that belongs to a different archive is rejected instead of silently
   corrupting the module.
@@ -118,7 +120,12 @@ responsive. Closing it with unsaved edits writes the JSON next to the archive.
 - Use `#n` for a line break. Control characters below `0x20` are not allowed;
   Shift-JIS and markup such as `#K003` pass through as ordinary characters.
 - Longer is fine: the text is moved to a new pool and the references are
-  re-patched for you.
+  re-patched for you. Text addressed through `$gp` stays `$gp` (gp itself is
+  kept at its original value); the tool never rewrites a reference to `$at`,
+  because the game's text reader cannot follow that form.
+- Rebuild from the **original** .ARA whenever you can. Archives produced by
+  older builds may still contain `$at` references; importing them repairs the
+  lines you translated, but a fresh build from the original fixes all of them.
 
 ## Before you share a translation
 

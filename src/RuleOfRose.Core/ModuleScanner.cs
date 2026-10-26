@@ -51,6 +51,11 @@ public static class ModuleScanner
         }
 
         var found = new Dictionary<int, TextEntryRecord>();
+        // Alamat terjauh yang dirujuk pola referensi mana pun (walau tidak
+        // menunjuk teks). Dipakai TextPatcher agar blok teks tambahan tidak
+        // menimpa alamat yang sudah dipakai instruksi lain dan tidak membuat
+        // rujukan lama tiba-tiba mengenai string baru.
+        long maxRef = 0;
         for (int p = 0x30; p + 4 <= dataStart; p += 4)
         {
             uint w = RtpkArchive.U(m, p);
@@ -63,8 +68,10 @@ public static class ModuleScanner
             else if ((w >> 26) == 9 && ((w >> 21) & 31) == 1)
             {
                 // AT is seeded with specialLuiBase by the loader; modules
-                // without other AT writes keep it. This form is also produced
-                // by a gp_addiu patch, so patched files remain readable.
+                // without other AT writes keep it. Bentuk ini hanya tersisa di
+                // arsip hasil patch versi lama (gp_addiu yang dulu di-rewrite
+                // ke AT); import menulis ulang ke $gp karena game tidak
+                // membaca teks lewat basis AT hasil patch.
                 q = basis + Signed((int)(w & 0xFFFF));
                 r = new TextRef("at_addiu", p);
             }
@@ -92,6 +99,7 @@ public static class ModuleScanner
             }
             else continue;
 
+            if (q >= 0 && q < 0x30000) maxRef = Math.Max(maxRef, q);
             if (q < 0 || q + 2 > m.Length) continue;
             if (m[(int)q] != '#' || (m[(int)q + 1] != 'R' && m[(int)q + 1] != 'F')) continue;
             int end = Array.IndexOf(m, (byte)0, (int)q);
@@ -120,6 +128,6 @@ public static class ModuleScanner
         // pindah ke pool tiap kali di-patch, instruksinya tidak — sehingga ID
         // tetap sama setelah rebuild dan JSON lama tetap bisa dipakai ulang.
         foreach (var e in entries) e.Id = $"text_{e.References.Min(r => r.InstructionOffset):X6}";
-        return new ModuleScan(gp, basis, atWrites, atViolations, entries);
+        return new ModuleScan(gp, basis, atWrites, atViolations, maxRef, entries);
     }
 }

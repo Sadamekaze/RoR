@@ -7,6 +7,12 @@ namespace RuleOfRose.Core;
 // by id regardless of which rebuild it came from. A v2 JSON (ids were text
 // offsets) keeps the old behaviour: matched by id when the hash matches,
 // otherwise by export order.
+//
+// Re-patch: translated strings go to two pools. Text addressed by `$gp` is
+// appended after the module data (gp keeps its value), so the reference stays a
+// plain `ADDIU rt,gp,imm`; LUI/ADDIU text whose base follows gp moves with it.
+// Mengganti rs ke $AT membuat teks tidak terbaca di game, jadi bentuk
+// gp_addiu tidak pernah diubah.
 public static class TextPatcher
 {
     public static TranslationDocument Export(string araPath, string? mergePath = null)
@@ -67,8 +73,8 @@ public static class TextPatcher
 
     // Basis (ruang offset modul) tiap gaya referensi: LUI hi=0x41/0x45 ->
     // specialLuiBase; 0x42/0x46 -> specialLuiBase+0x10000; hi lain ->
-    // native hi<<16 (VA = offset + (0x410000-basis)). gp_addiu setelah
-    // rewrite rs->AT juga basis.
+    // native hi<<16 (VA = offset + (0x410000-basis)). gp_addiu/at_addiu juga
+    // basis (AT = basis dimulai dari specialLuiBase).
     private static long RefBase(TextRef r, long basis) => r.Kind switch
     {
         "gp_addiu" or "at_addiu" => basis,
@@ -144,22 +150,32 @@ public static class TextPatcher
             return forEntry;
         }
 
-        var pool = new List<byte>();
-        var changes = new List<(TextEntryRecord Entry, int PoolOffset)>();
-        int dataStart = checked((int)RtpkArchive.U(m, 20));
-        // Pool disisipkan di teks pertama yang direferensikan, bukan selalu di
-        // dataStart: pada arsip yang sudah dipatch, string lama bisa berada
-        // sebelum dataStart, dan pool sesudahnya menggeser gp sementara string
-        // itu diam — referensi yang tidak berubah jadi meleset. Menyisipkan di
-        // titik teks pertama ikut menggeser semua string lama sebesar delta.
-        int insert = dataStart;
-        if (entries.Count > 0 && entries[0].ModuleOffset < insert) insert = entries[0].ModuleOffset;
+        // Teks yang berubah dibagi dua blok menurut cara rujukannya:
+        //  - shiftPool: rujukan LUI/ADDIU dengan basis specialLuiBase (hi 0x41 /
+        //    0x45). Jendela 16-bit-nya tidak sampai ujung modul, jadi blok ini
+        //    disisipkan sebelum teks pertama dan seluruh isi modul bergeser;
+        //    basis ikut bergeser bersama gp, sehingga rujukan lama tetap
+        //    menunjuk teks yang benar.
+        //  - appendPool: rujukan `ADDIU rt,gp,imm` (dan LUI dengan hi lain,
+        //    mis. 0x42 yang berbasis specialLuiBase+0x10000). Blok ini
+        //    ditambahkan SESUDAH modul, jadi tidak ada byte lama yang bergeser
+        //    dan bentuk gp_addiu tidak perlu diubah ke AT — game tidak membaca
+        //    teks yang dirujuk lewat AT.
+        var shiftPool = new List<byte>();
+        var appendPool = new List<byte>();
+        var changes = new List<(TextEntryRecord Entry, int Offset, bool AppendBlock)>();
         for (int i = 0; i < entries.Count; i++)
         {
             TextEntryRecord e = entries[i];
             TextEntryRecord edit = EditFor(i);
             string t = edit.Translation;
-            if (t == e.Source) continue;
+            bool appendBlock = e.References.Any(r =>
+                !(r.Kind == "lui_addiu" && (r.HiWord is null or 0x41 or 0x45)));
+            // Entri dengan referensi at_addiu berasal dari patch versi lama yang
+            // rs-nya sudah diubah ke AT: teksnya ikut dipindah supaya rujukannya
+            // bisa dikembalikan ke $gp walau terjemahannya sama.
+            bool legacyAt = e.References.Any(r => r.Kind == "at_addiu");
+            if (t == e.Source && !legacyAt) continue;
             if (t.Length < 2 || t[0] != '#' || (t[1] != 'R' && t[1] != 'F'))
                 throw new InvalidDataException(
                     $"Translation {e.Id} harus diawali #R atau #F — tanpa prefix itu teks" +
@@ -168,7 +184,8 @@ public static class TextPatcher
                 throw new InvalidDataException(
                     "Karakter kontrol (<0x20) dilarang; gunakan #n untuk newline" +
                     " (byte >=0x80/SJIS diizinkan)");
-            changes.Add((e, pool.Count));
+            List<byte> pool = appendBlock ? appendPool : shiftPool;
+            changes.Add((e, pool.Count, appendBlock));
             pool.AddRange(Encoding.Latin1.GetBytes(t));
             pool.Add(0);
             while (pool.Count % 4 != 0) pool.Add(0);
@@ -179,31 +196,78 @@ public static class TextPatcher
             return new ImportResult(0, 0, ara.Bytes.Length, true);
         }
 
-        while (pool.Count % 16 != 0) pool.Add(0);
-        int delta = pool.Count;
-        var nm = new byte[insert + delta + (m.Length - insert)];
-        Array.Copy(m, 0, nm, 0, insert);
-        pool.CopyTo(nm, insert);
-        Array.Copy(m, insert, nm, insert + delta, m.Length - insert);
-        RtpkArchive.Put(nm, 20, (uint)(dataStart + delta));
-        var (gp, basis) = ModuleScanner.Bases(nm);
-        if (gp + 0x780 > 0x30000 || nm.Length > 0x30000)
-            throw new InvalidDataException("Module exceeds fixed copy/work area");
-        foreach (var (e, p) in changes)
+        while (shiftPool.Count % 16 != 0) shiftPool.Add(0);
+        while (appendPool.Count % 16 != 0) appendPool.Add(0);
+        int deltaShift = shiftPool.Count;
+        int dataStart = checked((int)RtpkArchive.U(m, 20));
+        // Sisipan di teks pertama (atau dataStart) agar semua string lama ikut
+        // bergeser bersama gp; tanpa blok sisipan, modul tidak diubah sama sekali.
+        int insert = m.Length;
+        if (deltaShift > 0)
         {
+            insert = dataStart;
+            if (entries.Count > 0 && entries[0].ModuleOffset < insert) insert = entries[0].ModuleOffset;
+        }
+        // Blok tambahan diletakkan sesudah alamat terjauh yang dirujuk pola
+        // referensi mana pun (teks atau bukan), supaya rujukan lama tidak
+        // tiba-tiba mengenai string baru dan tidak ada data yang tertimpa.
+        int appendBase = m.Length + deltaShift;
+        if (appendPool.Count > 0)
+        {
+            int gapBase = RtpkArchive.Align(Math.Max(m.Length, (int)scan.MaxRefTarget + 1));
+            appendBase = gapBase + deltaShift;
+        }
+        var nm = new byte[appendBase + appendPool.Count];
+        Array.Copy(m, 0, nm, 0, insert);
+        shiftPool.CopyTo(nm, insert);
+        Array.Copy(m, insert, nm, insert + deltaShift, m.Length - insert);
+        if (appendPool.Count > 0) appendPool.CopyTo(nm, appendBase);
+        if (!nm.AsSpan(insert + deltaShift, m.Length - insert).SequenceEqual(m.AsSpan(insert)))
+            throw new InvalidDataException("Data asli setelah pool tidak identik");
+        if (nm.Length > 0x30000)
+            throw new InvalidDataException("Module exceeds fixed copy/work area");
+        if (deltaShift > 0)
+        {
+            // Isi modul bergeser, jadi gp dan specialLuiBase ikut bergeser.
+            RtpkArchive.Put(nm, 20, (uint)(dataStart + deltaShift));
+        }
+        int tailGrowth = nm.Length - m.Length - deltaShift;
+        if (tailGrowth > 0)
+        {
+            // Blok tambahan ada di ujung modul (sesudah alamat terjauh yang
+            // dirujuk instruksi) dan posisinya relatif terhadap gp harus tetap
+            // (tidak ikut bergeser). Header tetap konsisten
+            // (dataStart + dataSize = panjang modul, seperti modul asli):
+            //   gp = dataStart + dataSize + bias + 0x8000
+            // dataSize tumbuh sebesar blok itu dan bias (i32@12) turun sebesar itu.
+            uint dataSize = RtpkArchive.U(nm, 24);
+            int bias = RtpkArchive.I32(nm, 12);
+            RtpkArchive.Put(nm, 24, dataSize + (uint)tailGrowth);
+            RtpkArchive.Put(nm, 12, unchecked((uint)(bias - tailGrowth)));
+        }
+        var (gp, basis) = ModuleScanner.Bases(nm);
+        var (gpBefore, basisBefore) = ModuleScanner.Bases(m);
+        if (gp - gpBefore != deltaShift || basis - basisBefore != deltaShift)
+            throw new InvalidDataException("GP/basis bergeser tidak sesuai tata letak pool");
+        foreach (var (e, offset, appendBlock) in changes)
+        {
+            int target = (appendBlock ? appendBase : insert) + offset;
             foreach (var r in e.References)
             {
-                long rbase = RefBase(r, basis);
-                long imm = insert + p - rbase;
+                // gp_addiu tetap gp_addiu (rs=$gp); at_addiu hanya muncul di
+                // arsip hasil patch versi lama, dan ikut dikembalikan ke gp.
+                bool gpRelative = r.Kind is "gp_addiu" or "at_addiu";
+                long rbase = gpRelative ? gp : RefBase(r, basis);
+                long imm = target - rbase;
                 if (imm < -32768 || imm > 32767)
                     throw new InvalidDataException(
-                        $"Teks baru {e.Id} di luar jendelaimmediate untuk referensi {r.Kind}" +
+                        $"Teks baru {e.Id} di luar jendela immediate untuk referensi {r.Kind}" +
                         (r.HiWord is { } h ? $" (LUI hi=0x{h:X})" : "") +
-                        "; kurangi panjang teks atau ubah entry lain");
+                        "; kurangi panjang teks");
                 int loc = r.InstructionOffset;
                 uint word = RtpkArchive.U(nm, loc);
-                if (r.Kind == "gp_addiu")
-                    word = (word & ~(31u << 21)) | (1u << 21); // rs: gp -> AT
+                if (gpRelative)
+                    word = (word & ~(31u << 21)) | (28u << 21); // rs = $gp (jangan AT)
                 RtpkArchive.Put(nm, loc, (word & 0xFFFF0000) | ((uint)imm & 0xFFFF));
             }
         }
@@ -224,10 +288,6 @@ public static class TextPatcher
                     throw new InvalidDataException($"Verifikasi referensi gagal untuk {e.Id} @0x{r.InstructionOffset:X}");
             }
         }
-        if (!nm.AsSpan(insert + delta).SequenceEqual(m.AsSpan(insert)))
-            throw new InvalidDataException("Data asli setelah pool tidak identik");
-        if (ModuleScanner.Bases(nm).Gp - ModuleScanner.Bases(m).Gp != delta)
-            throw new InvalidDataException("GP shift tidak sesuai delta pool");
 
         var parts = ara.Parts.ToList();
         parts[ara.ModulePartIndex] = nm;
@@ -240,6 +300,6 @@ public static class TextPatcher
                 throw new InvalidDataException($"Bagian RTPK ke-{i} tidak identik setelah rebuild");
         }
         File.WriteAllBytes(outputPath, result);
-        return new ImportResult(changes.Count, delta, result.Length, false);
+        return new ImportResult(changes.Count, nm.Length - m.Length, result.Length, false);
     }
 }

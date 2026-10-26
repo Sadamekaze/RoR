@@ -22,7 +22,6 @@ public static class TextPatcher
         var doc = new TranslationDocument
         {
             SourceSha256 = ara.Sha256,
-            Scope = $"{scan.Entries.Count} referenced text entries: LUI/ADDIU (semua hi) + GP/AT-relative; not all game text",
             Entries = scan.Entries,
         };
         if (mergePath is not null)

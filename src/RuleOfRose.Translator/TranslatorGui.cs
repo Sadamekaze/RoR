@@ -554,7 +554,6 @@ public sealed class TranslatorGui : Form
         {
             Format = TranslationDocument.CurrentFormat,
             SourceSha256 = _ara!.Sha256,
-            Scope = $"{_allRows.Count} referenced text entries: LUI/ADDIU (semua hi) + GP/AT-relative; not all game text",
             // Urut mengikuti id (offset instruksi) agar JSON hasil GUI sama
             // urutannya dengan export CLI di tiap rebuild.
             Entries = _allRows.Select(r => r.Record).OrderBy(r => r.Id, StringComparer.Ordinal).ToList()

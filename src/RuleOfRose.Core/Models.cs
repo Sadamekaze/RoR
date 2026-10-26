@@ -33,8 +33,10 @@ public sealed class TextEntryRecord
     // module data when the reference uses $gp, before the first text when it
     // uses the LUI/ADDIU base) and every reference is re-patched.
     [JsonPropertyName("translation")] public string Translation { get; set; } = "";
-    [JsonPropertyName("module_offset")] public int ModuleOffset { get; set; }
-    [JsonPropertyName("references")] public List<TextRef> References { get; set; } = [];
+    // Hasil scan, bukan data terjemahan: dipakai patcher/CLI/GUI di memori dan
+    // tidak ditulis ke JSON — nilainya selalu bisa dihitung ulang dari .ARA.
+    [JsonIgnore] public int ModuleOffset { get; set; }
+    [JsonIgnore] public List<TextRef> References { get; set; } = [];
 }
 
 public sealed class TranslationDocument
@@ -44,7 +46,6 @@ public sealed class TranslationDocument
     public const string CurrentFormat = "ror-a164-v3";
     [JsonPropertyName("format")] public string Format { get; set; } = CurrentFormat;
     [JsonPropertyName("source_sha256")] public string SourceSha256 { get; set; } = "";
-    [JsonPropertyName("scope")] public string Scope { get; set; } = "";
     [JsonPropertyName("entries")] public List<TextEntryRecord> Entries { get; set; } = [];
 }
 
